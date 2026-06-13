@@ -1,0 +1,27 @@
+# ── Credentials & secrets (NEVER commit these) ───────────────────────────────
+config.py
+upstox_token.json
+
+# ── Python virtual environment ────────────────────────────────────────────────
+statergy/
+
+# ── Generated outputs (re-created by running scripts) ────────────────────────
+trades.csv
+price_data.csv
+optimization_results.csv
+ratio_strategy.sql
+*.xlsx
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
