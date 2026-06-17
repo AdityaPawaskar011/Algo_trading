@@ -61,7 +61,7 @@ LIVE_BASE   = "https://api.upstox.com/v2"
 SENSEX_KEY  = "BSE_INDEX|SENSEX"
 NIFTY_KEY   = "NSE_INDEX|Nifty 50"
 TICK_TABLE  = "tick_data"
-TRADE_TABLE = "paper_trades"
+TRADE_TABLE = "paper_trade"
 EOD_HH, EOD_MM = 15, 29     # square-off all positions at this time
 
 
