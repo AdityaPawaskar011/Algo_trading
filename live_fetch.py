@@ -96,7 +96,7 @@ def fetch_close(token: str, for_date: date) -> tuple[date, float, float]:
         if not candles:
             raise ValueError(
                 f"No candle data returned for {label} on {date_str}. "
-                "Market may be closed or data not yet available — try after 16:00 IST."
+                "Market may be closed or data not yet available - try after 16:00 IST."
             )
         # candle: [timestamp, open, high, low, close, volume, oi]
         return round(float(candles[0][4]), 2)
@@ -165,11 +165,18 @@ def main():
             print("Usage: python live_fetch.py --date YYYY-MM-DD")
             sys.exit(1)
 
-    print(f"Fetching market data for {target_date} ...")
     token = get_access_token()
-    td, sx, nf = fetch_close(token, target_date)
-    upsert_price(td, sx, nf)
-    print("Done.")
+    print(f"Token ready for {date.today()}.")
+
+    print(f"Fetching closing price for {target_date} ...")
+    try:
+        td, sx, nf = fetch_close(token, target_date)
+        upsert_price(td, sx, nf)
+        print("Done.")
+    except ValueError as e:
+        print(f"\nNote: {e}")
+        print("Token is saved and valid — you can run  python live_trader.py  now.")
+        print("Run  python live_fetch.py  again after 15:45 IST to save today's close.")
 
 
 if __name__ == "__main__":
