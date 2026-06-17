@@ -498,8 +498,8 @@ class PaperTrader:
 def main():
     source    = "yfinance"
     interval  = 1
-    save_db   = "--no-save"   not in sys.argv
-    do_orders = "--no-orders" not in sys.argv
+    save_db   = "--no-save" not in sys.argv
+    do_orders = "--orders"  in sys.argv   # off by default; sandbox unreachable on most networks
 
     if "--source" in sys.argv:
         source = sys.argv[sys.argv.index("--source") + 1]
@@ -520,14 +520,14 @@ def main():
         ensure_tables()
 
     sandbox_enabled = do_orders and _SANDBOX_CFG
-    print(
-        f"  Sandbox orders: {'ENABLED  ' + SANDBOX_BASE_URL if sandbox_enabled else 'DISABLED'}"
-    )
+    print(f"  Paper trading: ACTIVE  (all trades saved to [{TRADE_TABLE}])")
+    if sandbox_enabled:
+        print(f"  Sandbox orders: ENABLED  {SANDBOX_BASE_URL}")
 
     trader = PaperTrader(save_db, do_orders)
 
     print(
-        f"\nStrategy:  Entry ±{ENTRY}  |  Exit ±{EXIT}  |  "
+        f"\nStrategy:  Entry +/-{ENTRY}  |  Exit +/-{EXIT}  |  "
         f"SL {STOP_LOSS} pts  |  MaxHold {MAX_HOLD} days  |  "
         f"Rs{POINT_VALUE}/pt"
     )
