@@ -70,13 +70,13 @@ def ensure_tick_table():
     cursor.execute(f"""
         IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = '{TICK_TABLE}')
         CREATE TABLE {TICK_TABLE} (
+            id           INT IDENTITY(1,1) PRIMARY KEY,
             tick_time    DATETIME       NOT NULL,
             sensex_ltp   DECIMAL(12,2)  NOT NULL,
             nifty_ltp    DECIMAL(12,2)  NOT NULL,
             spread       DECIMAL(12,2),
             zscore       DECIMAL(8,3),
-            signal       VARCHAR(30),
-            PRIMARY KEY (tick_time)
+            signal       VARCHAR(40)
         )
     """)
     conn.commit()
