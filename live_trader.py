@@ -13,8 +13,8 @@ Usage:
     python live_trader.py                       (history from yfinance_feed)
     python live_trader.py --source upstox       (history from upstox_feed)
     python live_trader.py --interval 2          (poll every 2 seconds)
-    python live_trader.py --no-save             (skip SQL tick storage)
-    python live_trader.py --no-orders           (skip sandbox API orders)
+    python live_trader.py --no-save             (skip all SQL writes)
+    python live_trader.py --interval 2          (poll every 2 seconds)
 
 Market hours: 09:15 - 15:30 IST
 Pre-req: python live_fetch.py  to get today's market data token.
@@ -56,6 +56,7 @@ except ImportError:
     POINT_VALUE = 100  # ₹ per spread point (display only)
 
 from backtest import load_from_sql, compute_signals, ENTRY, EXIT, STOP_LOSS, MAX_HOLD
+from raw_feed import ensure_raw_table, save_raw
 
 LIVE_BASE   = "https://api.upstox.com/v2"
 SENSEX_KEY  = "BSE_INDEX|SENSEX"
@@ -115,7 +116,8 @@ def ensure_tables():
     """)
     conn.commit()
     conn.close()
-    print(f"SQL tables ready: [{TICK_TABLE}]  [{TRADE_TABLE}]")
+    ensure_raw_table()
+    print(f"SQL tables ready: [{TICK_TABLE}]  [{TRADE_TABLE}]  [raw_data]")
 
 
 def save_tick(tick_time, sx, nf, sp, z, signal):
@@ -154,10 +156,14 @@ def get_live_token():
     return d["access_token"]
 
 
-def fetch_ltp(token):
-    """Returns (sensex_ltp, nifty_ltp)."""
+def fetch_full_quote(token):
+    """
+    Calls Upstox full-quote endpoint. Returns:
+      (sensex_ltp, nifty_ltp, sensex_quote_dict, nifty_quote_dict)
+    quote dicts contain all raw fields for saving to raw_data.
+    """
     keys = f"{SENSEX_KEY},{NIFTY_KEY}"
-    url  = f"{LIVE_BASE}/market-quote/ltp?instrument_key={quote(keys, safe=',')}"
+    url  = f"{LIVE_BASE}/market-quote/quotes?instrument_key={quote(keys, safe=',')}"
     r = requests.get(
         url,
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
@@ -166,17 +172,20 @@ def fetch_ltp(token):
     r.raise_for_status()
     data = r.json().get("data", {})
 
-    def find(key):
-        for k, v in data.items():
-            if key.replace("|", ":") in k or key in k:
-                return float(v.get("last_price", 0))
-        return None
+    sx_quote, nf_quote = None, None
+    for k, v in data.items():
+        if "SENSEX" in k: sx_quote = v
+        if "Nifty"  in k or "NIFTY" in k: nf_quote = v
 
-    sx = find(SENSEX_KEY)
-    nf = find(NIFTY_KEY)
-    if sx is None or nf is None:
-        raise ValueError(f"Could not parse LTP response: {data}")
-    return sx, nf
+    if sx_quote is None or nf_quote is None:
+        raise ValueError(f"Could not parse quote response: {list(data.keys())}")
+
+    return (
+        float(sx_quote["last_price"]),
+        float(nf_quote["last_price"]),
+        sx_quote,
+        nf_quote,
+    )
 
 
 def compute_live(df_hist, sensex, nifty):
@@ -546,10 +555,15 @@ def main():
         while True:
             t0 = time.time()
             try:
-                sensex, nifty     = fetch_ltp(live_token)
+                sensex, nifty, sx_quote, nf_quote = fetch_full_quote(live_token)
                 spread, zscore, ratio = compute_live(df_hist, sensex, nifty)
                 now               = datetime.now()
                 tick_count       += 1
+
+                # Save raw Upstox data for both symbols
+                if save_db:
+                    save_raw("SENSEX", sx_quote, now)
+                    save_raw("NIFTY",  nf_quote, now)
 
                 status, live_pnl  = trader.on_tick(
                     sensex, nifty, spread, zscore, ratio, now
