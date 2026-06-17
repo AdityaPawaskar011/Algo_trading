@@ -55,7 +55,7 @@ try:
 except ImportError:
     POINT_VALUE = 100  # ₹ per spread point (display only)
 
-from backtest import load_from_sql, compute_signals, ENTRY, EXIT, STOP_LOSS, MAX_HOLD
+from backtest import load_from_sql, compute_signals, ENTRY, EXIT, STOP_LOSS, MAX_HOLD, PROFIT_TARGET
 from raw_feed import ensure_raw_table, save_raw
 
 LIVE_BASE   = "https://api.upstox.com/v2"
@@ -314,6 +314,11 @@ class PaperTrader:
                 self._close("STOP_LOSS", sensex, nifty, spread, zscore, now)
                 return "STOP LOSS HIT", pnl
 
+            # Profit target
+            if pnl >= PROFIT_TARGET:
+                self._close("PROFIT_TARGET", sensex, nifty, spread, zscore, now)
+                return "PROFIT TARGET HIT ***", pnl
+
             # Max hold
             age_days = (now - self._trade["entry_time"]).days
             if age_days >= MAX_HOLD:
@@ -537,8 +542,8 @@ def main():
 
     print(
         f"\nStrategy:  Entry +/-{ENTRY}  |  Exit +/-{EXIT}  |  "
-        f"SL {STOP_LOSS} pts  |  MaxHold {MAX_HOLD} days  |  "
-        f"Rs{POINT_VALUE}/pt"
+        f"Target +{PROFIT_TARGET} pts  |  SL -{STOP_LOSS} pts  |  "
+        f"MaxHold {MAX_HOLD} days  |  Rs{POINT_VALUE}/pt"
     )
     print(f"Interval: {interval}s  |  Press Ctrl+C to stop\n")
 

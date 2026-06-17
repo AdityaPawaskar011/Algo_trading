@@ -30,6 +30,7 @@ LOOKBACK        = 15     # rolling window for spread mean/std (trading days)
 ENTRY           = 2.0    # enter when |z-score| >= this
 EXIT            = 0.7    # exit when |z-score| <= this
 STOP_LOSS       = 100    # exit immediately if loss exceeds this many spread points
+PROFIT_TARGET   = 30     # exit immediately when profit reaches this many spread points
 MAX_HOLD        = 15     # max trading days to hold (proxy for "expiry")
 MODE            = "reversion"   # "reversion" or "trend"
 RUPEE_PER_POINT = 1.0    # set to your contract value for INR P&L
@@ -121,13 +122,15 @@ def backtest(df):
                 elif position["dir"] == "SHORT_SPREAD" and z >= 0:
                     exit_now, reason = True, "trend_faded"
 
-            # stop loss: exit if current loss exceeds STOP_LOSS points
+            # stop loss / profit target: check live P&L every bar
             if not exit_now:
                 s_now = row["spread"]
                 live_pnl = (s_now - position["spread_entry"]) if position["dir"] == "LONG_SPREAD" \
                            else (position["spread_entry"] - s_now)
                 if live_pnl <= -STOP_LOSS:
                     exit_now, reason = True, "stop_loss"
+                elif live_pnl >= PROFIT_TARGET:
+                    exit_now, reason = True, "profit_target"
 
             if held >= MAX_HOLD and not exit_now:
                 exit_now, reason = True, "expiry"
