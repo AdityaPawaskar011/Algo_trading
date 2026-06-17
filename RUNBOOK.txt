@@ -1,0 +1,233 @@
+================================================================================
+  SENSEX-NIFTY SPREAD ALGO TRADING — RUNBOOK
+  What to run, when to run it, and what it does
+================================================================================
+
+BEFORE ANYTHING — activate virtual environment first (every time you open terminal)
+────────────────────────────────────────────────────────────────────────────────
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+  & c:\Users\adity\Downloads\trade\files\statergy\Scripts\Activate.ps1
+
+  You should see (statergy) at the start of your terminal line.
+  All commands below assume the venv is active.
+
+
+================================================================================
+  STEP 1 — ONE TIME SETUP (run these only once ever)
+================================================================================
+
+  1a. Load 3 years of historical data into SQL (Yahoo Finance)
+  ─────────────────────────────────────────────────────────────
+      python fill_real_data.py --yes
+
+      What it does : Downloads SENSEX + NIFTY data from 2023 to today
+                     Saves into yfinance_feed table in SQL Server testdb
+      Takes        : ~30 seconds
+      Run again    : Every month to keep history fresh (optional)
+
+
+  1b. Verify backtest works
+  ─────────────────────────
+      python backtest.py --source yfinance --start 2025-01-01
+
+      What it does : Tests the strategy on historical data
+                     Shows total trades, win rate, P&L
+
+
+  1c. (Optional) Optimize strategy parameters
+  ────────────────────────────────────────────
+      python optimize.py
+
+      What it does : Tries 1296 parameter combinations
+                     Finds the best Entry/Exit/StopLoss settings
+      Takes        : ~5 minutes
+
+
+================================================================================
+  STEP 2 — EVERY MORNING BEFORE 09:15 AM IST
+================================================================================
+
+  Get today's Upstox token (required for live data)
+  ──────────────────────────────────────────────────
+      python live_fetch.py
+
+      What happens :
+        - Opens Upstox login in your browser
+        - You log in and copy the redirect URL (https://127.0.0.1/?code=...)
+        - Paste it back in terminal
+        - Token saved to upstox_token.json (valid for today only)
+
+      If you see "Using cached token. Token ready for today."
+        → Token already fresh, skip to Step 3
+
+      If you see "No candle data returned..."
+        → Normal! Token is saved. Market hasn't closed yet.
+           Run again after 15:45 to save today's close price.
+
+
+================================================================================
+  STEP 3 — MARKET HOURS : 09:15 AM to 03:30 PM IST
+================================================================================
+
+  Start the live paper trader (MAIN SCRIPT — runs everything)
+  ────────────────────────────────────────────────────────────
+      python live_trader.py
+
+      What it does every 0.5 seconds:
+        → Fetches live SENSEX + NIFTY price from Upstox
+        → Saves full quote (all fields) to raw_data table
+        → Computes rolling ratio, spread, z-score
+        → Checks strategy signals:
+             Z <= -2.0  →  BUY  Sensex + SELL Nifty  (LONG spread)
+             Z >= +2.0  →  SELL Sensex + BUY  Nifty  (SHORT spread)
+             Z <= +0.7  →  Exit LONG trade
+             Z >= -0.7  →  Exit SHORT trade
+             Loss hits -100 pts  →  Stop loss exit
+             15 days held  →  Max hold exit
+             15:29 IST  →  End of day, all trades closed
+        → Saves every tick to tick_data table
+        → Saves every trade to paper_trade table
+
+      Terminal shows:
+        TIME       SENSEX        NIFTY    RATIO    SPREAD    Z   STATUS        P&L
+        09:20:12  82,280.00   24,950.00  3.3010   -118.50  -2.06  LONG ENTERED  0.00
+
+      Press Ctrl+C to stop anytime.
+
+
+  If you only want tick data (no paper trading):
+  ───────────────────────────────────────────────
+      python tick_poller.py
+
+      What it does : Fetches live price every second
+                     Saves to tick_data only
+                     No paper trading
+
+
+  Check current signal at any moment:
+  ─────────────────────────────────────
+      python check_trade.py
+
+      Shows : Live price, current Z-score, open trade status, live P&L
+
+
+================================================================================
+  STEP 4 — AFTER MARKET CLOSE : after 03:45 PM IST
+================================================================================
+
+  Save today's closing price to database
+  ───────────────────────────────────────
+      python live_fetch.py
+
+      What it does : Fetches today's final closing price from Upstox
+                     Saves to upstox_feed table (grows by 1 row each day)
+      Run          : Every trading day after 15:45 IST
+
+
+  Generate Excel report of all trades
+  ─────────────────────────────────────
+      python report.py --source yfinance --start 2025-01-01 --out myreport.xlsx
+
+      What it does : Creates 4-sheet Excel file:
+                       Sheet 1 — Summary (win rate, P&L, Sharpe ratio)
+                       Sheet 2 — Trade log (green=win, red=loss)
+                       Sheet 3 — Day-wise log (every day with z-score)
+                       Sheet 4 — Monthly P&L
+
+
+================================================================================
+  STEP 5 — ANYTIME (no market hours restriction)
+================================================================================
+
+  Backtest on Yahoo Finance data:
+      python backtest.py --source yfinance --start 2025-01-01
+
+  Backtest on Upstox live data (after a few days of collecting):
+      python backtest.py --source upstox
+
+  Backtest with custom dates:
+      python backtest.py --source yfinance --start 2024-01-01 --end 2024-12-31
+
+  Generate report with custom output file:
+      python report.py --out report_june.xlsx
+
+  Check current paper trade status:
+      python check_trade.py
+
+
+================================================================================
+  SQL TABLES IN YOUR DATABASE (testdb)
+================================================================================
+
+  Table          Filled by          What it contains
+  ─────────────────────────────────────────────────────────────────────────────
+  yfinance_feed  fill_real_data.py  Historical daily SENSEX+NIFTY (Yahoo)
+  upstox_feed    live_fetch.py      Daily close from Upstox (1 row/day)
+  raw_data       live_trader.py     Every 0.5s tick — all Upstox fields
+  tick_data      live_trader.py     Every 0.5s tick — spread + zscore
+  paper_trade    live_trader.py     Every trade entry + exit + P&L
+
+  Useful SSMS queries:
+  ─────────────────────
+  USE testdb;
+
+  -- Watch raw ticks coming in live
+  SELECT TOP 20 * FROM raw_data ORDER BY id DESC
+
+  -- All paper trades
+  SELECT * FROM paper_trade ORDER BY entry_time DESC
+
+  -- Today's paper trades only
+  SELECT * FROM paper_trade WHERE trade_date = CAST(GETDATE() AS DATE)
+
+  -- Session P&L summary
+  SELECT
+      COUNT(*)                    AS total_trades,
+      SUM(CASE WHEN pnl_pts > 0 THEN 1 ELSE 0 END) AS wins,
+      SUM(CASE WHEN pnl_pts < 0 THEN 1 ELSE 0 END) AS losses,
+      SUM(pnl_pts)                AS total_pnl_pts,
+      SUM(pnl_pts) * 100          AS approx_rupees
+  FROM paper_trade
+  WHERE status = 'CLOSED'
+
+
+================================================================================
+  TYPICAL DAILY ROUTINE (QUICK REFERENCE)
+================================================================================
+
+  08:45 AM   →  Activate venv + run  python live_fetch.py
+  09:15 AM   →  Run  python live_trader.py   (leave it running)
+  Anytime    →  Run  python check_trade.py   (check status)
+  03:30 PM   →  live_trader.py auto-closes all trades (EOD)
+  03:45 PM   →  Run  python live_fetch.py    (save today's close)
+  04:00 PM   →  Run  python report.py --out report_today.xlsx
+
+
+================================================================================
+  IF SOMETHING GOES WRONG
+================================================================================
+
+  "Token expired" error
+  ─────────────────────
+      Run  python live_fetch.py  to get a fresh token
+
+  "No candle data" error in live_fetch.py
+  ────────────────────────────────────────
+      Normal before market closes. Token is still saved.
+      Run again after 15:45 to save closing price.
+
+  "Invalid object name tick_data" in SSMS
+  ────────────────────────────────────────
+      You are on wrong database. Add at top of SSMS query:
+          USE testdb;
+
+  Script stops mid-day
+  ─────────────────────
+      Just run  python live_trader.py  again.
+      It automatically resumes the open trade from database.
+
+  live_trader.py shows wrong/old data
+  ─────────────────────────────────────
+      Run  python fill_real_data.py --yes  to refresh history.
+
+================================================================================
