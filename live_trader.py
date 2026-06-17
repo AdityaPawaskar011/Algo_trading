@@ -506,7 +506,7 @@ class PaperTrader:
 
 def main():
     source    = "yfinance"
-    interval  = 1
+    interval  = 0.5          # poll every 0.5s = up to 2 ticks/second
     save_db   = "--no-save" not in sys.argv
     do_orders = "--orders"  in sys.argv   # off by default; sandbox unreachable on most networks
 
@@ -556,14 +556,17 @@ def main():
             t0 = time.time()
             try:
                 sensex, nifty, sx_quote, nf_quote = fetch_full_quote(live_token)
-                spread, zscore, ratio = compute_live(df_hist, sensex, nifty)
-                now               = datetime.now()
-                tick_count       += 1
+                now         = datetime.now()
+                tick_count += 1
 
-                # Save raw Upstox data for both symbols
+                # ── raw_data: save FIRST, before any computation ──────────────
+                # This guarantees every single tick lands in raw_data even if
+                # spread / z-score computation fails or throws.
                 if save_db:
                     save_raw("SENSEX", sx_quote, now)
                     save_raw("NIFTY",  nf_quote, now)
+
+                spread, zscore, ratio = compute_live(df_hist, sensex, nifty)
 
                 status, live_pnl  = trader.on_tick(
                     sensex, nifty, spread, zscore, ratio, now
