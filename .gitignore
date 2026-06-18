@@ -19,6 +19,15 @@ __pycache__/
 *.pyd
 .Python
 
+# ── Runtime logs (re-created each session) ───────────────────────────────────
+trader_out.txt
+trader_err.txt
+demo.txt
+
+# ── Temp / debug scripts ──────────────────────────────────────────────────────
+_check_db.py
+test_profit_target.py
+
 # ── OS / editor ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
