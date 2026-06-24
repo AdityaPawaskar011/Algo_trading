@@ -18,7 +18,7 @@ def main():
     tag = arg("--tag", date.today().strftime("%Y_%m_%d"))
     datestr = tag.replace("_", "-")
 
-    sx = pd.read_csv("sensex_data.csv", usecols=["tick_time"])
+    sx = pd.read_csv(arg("--sensex", "sensex_data.csv"), usecols=["tick_time"])
     n_ticks, span = len(sx), f"{sx.tick_time.min()} to {sx.tick_time.max()}"
 
     one = pd.read_csv(f"backtest_{tag}_1min.csv")

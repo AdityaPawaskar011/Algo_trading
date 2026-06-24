@@ -64,7 +64,10 @@ def autoformat(ws, money_cols=(), result_col=None):
                 v = float(cell.value)
             except (TypeError, ValueError):
                 continue
-            cell.fill = GREEN if v > 0 else (RED if v < 0 else None) or cell.fill
+            if v > 0:
+                cell.fill = GREEN
+            elif v < 0:
+                cell.fill = RED
             cell.number_format = "+#,##0.00;-#,##0.00"
     if result_col:
         ci = headers.get(result_col)
@@ -87,7 +90,7 @@ def main():
     profit   = read(f"backtest_{tag}_configs.csv")
 
     # 1-min price context
-    px = resample(load_series("sensex_data.csv", "nifty_data.csv"), "1min")
+    px = resample(load_series(arg("--sensex", "sensex_data.csv"), arg("--nifty", "nifty_data.csv")), "1min")
     px = px.rename(columns={"date": "time", "sensex_close": "sensex", "nifty_close": "nifty"})
 
     with pd.ExcelWriter(OUT, engine="openpyxl") as xl:

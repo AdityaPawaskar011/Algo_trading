@@ -594,12 +594,42 @@ def compute_live(df_history: pd.DataFrame, sensex: float, nifty: float) -> dict:
     }
 
 
+def compute_intraday(buf: list, sensex: float, nifty: float) -> dict:
+    """Intraday signal — z-score over the DAY'S OWN recent ticks (rolling
+    RATIO_LOOKBACK / LOOKBACK in ticks ~= seconds), matching the per-second
+    backtest. Unlike compute_live (z vs daily history, which sits ~1.5), this
+    crosses +/-ENTRY intraday so trades actually fire. Needs ~RATIO_LOOKBACK+
+    LOOKBACK ticks of warm-up before z is valid."""
+    buf.append({"date": pd.Timestamp(datetime.now()),
+                "sensex_close": sensex, "nifty_close": nifty})
+    if len(buf) > 400:               # keep only the recent window
+        del buf[:len(buf) - 400]
+
+    last = compute_signals(pd.DataFrame(buf)).iloc[-1]
+    z, spread, ratio = last["zscore"], last["spread"], last["ratio"]
+    if pd.isna(z):
+        return {"spread": None, "zscore": None, "ratio": None, "signal": "WARMING UP"}
+
+    if   z <= -ENTRY: signal = "BUY  SENSEX  +  SELL NIFTY"
+    elif z >=  ENTRY: signal = "SELL SENSEX  +  BUY  NIFTY"
+    elif abs(z) <= 0.3: signal = "EXIT / HOLD"
+    else:             signal = "HOLD"
+    return {"spread": round(spread, 2), "zscore": round(z, 3),
+            "ratio": round(ratio, 4), "signal": signal}
+
+
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
+    global SENSEX_CSV, NIFTY_CSV
     source   = "csv"
     interval = 1
     save_csv = "--no-save" not in sys.argv
+    intraday = "--intraday" in sys.argv   # z over the day's own ticks (per-second backtest style)
+    if "--sensex-out" in sys.argv:
+        SENSEX_CSV = sys.argv[sys.argv.index("--sensex-out") + 1]
+    if "--nifty-out" in sys.argv:
+        NIFTY_CSV = sys.argv[sys.argv.index("--nifty-out") + 1]
 
     if "--source" in sys.argv:          # accepted for backward-compat, ignored
         idx    = sys.argv.index("--source")
@@ -664,6 +694,9 @@ def main():
 
     tick_count = 0
     last_sx = last_nf = last_sp = last_z = last_now = None
+    intraday_buf = []
+    if intraday:
+        print("Signal mode: INTRADAY (z over the day's own ticks, per-second backtest style)")
 
     try:
         while True:
@@ -689,7 +722,8 @@ def main():
                 sx_fut = quotes.get(sensex_fut) if sensex_fut else None
                 nf_fut = quotes.get(nifty_fut)  if nifty_fut  else None
 
-                result        = compute_live(df_history, sensex, nifty)
+                result        = (compute_intraday(intraday_buf, sensex, nifty)
+                                  if intraday else compute_live(df_history, sensex, nifty))
                 now           = datetime.now()
                 tick_count   += 1
                 last_sx, last_nf       = sensex, nifty

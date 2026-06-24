@@ -58,9 +58,9 @@ def run_combo(df, rw, sw, entry, exit_, tp, sl, mh, cost):
 
 
 def main():
-    cost = float(arg("--cost-pts", "35"))
+    cost = float(arg("--cost-pts", "4"))
     tag  = arg("--tag", date.today().strftime("%Y_%m_%d"))
-    df_tick = load_series("sensex_data.csv", "nifty_data.csv")
+    df_tick = load_series(arg("--sensex", "sensex_data.csv"), arg("--nifty", "nifty_data.csv"))
     bars = {b: resample(df_tick, b) for b in BARS}
     for b in BARS:
         print(f"  {b}: {len(bars[b])} bars")

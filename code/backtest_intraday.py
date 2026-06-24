@@ -60,7 +60,7 @@ def main():
     sensex_csv = arg("--sensex", "sensex_data.csv")
     nifty_csv  = arg("--nifty",  "nifty_data.csv")
     rule       = arg("--resample", None)
-    cost_pts   = float(arg("--cost-pts", "0"))
+    cost_pts   = float(arg("--cost-pts", "4"))
     out        = arg("--out", "backtest_2026_06_18.csv")
 
     df = load_series(sensex_csv, nifty_csv)

@@ -55,12 +55,12 @@ def evaluate(df, cfg, cost):
 
 def main():
     folds    = int(arg("--folds", "2"))
-    cost     = float(arg("--cost-pts", "35"))
+    cost     = float(arg("--cost-pts", "4"))
     mint     = int(arg("--min-trades", "3"))
     rule     = arg("--resample", "1min")
     tag      = arg("--tag", date.today().strftime("%Y_%m_%d"))
 
-    df = resample(load_series("sensex_data.csv", "nifty_data.csv"), rule)
+    df = resample(load_series(arg("--sensex", "sensex_data.csv"), arg("--nifty", "nifty_data.csv")), rule)
     n = len(df)
     edges = [int(round(i * n / folds)) for i in range(folds + 1)]
     chunks = [df.iloc[edges[i]:edges[i + 1]].reset_index(drop=True) for i in range(folds)]
