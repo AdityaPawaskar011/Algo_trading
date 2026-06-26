@@ -16,9 +16,16 @@ NOTE: Database (SQL Server) storage is currently DISABLED.
       re-enabled later.
 
 Usage:
-    python tick_poller.py                    # history from history.csv
+    python tick_poller.py                    # auto dated folder (see below)
     python tick_poller.py --interval 2       # poll every 2 seconds (default: 1)
     python tick_poller.py --no-save          # don't write ticks to CSV
+    python tick_poller.py --sensex-out X --nifty-out Y   # manual paths (no dated folder)
+
+By DEFAULT each run creates a dated folder for today and writes two dated CSVs
+into it -- <YYYY_MM_DD>/sensex_<YYYY-MM-DD>.csv and .../nifty_<YYYY-MM-DD>.csv --
+and also mirrors the live data to sensex_today.csv / nifty_today.csv so the rest
+of the pipeline (paper_tracker.py, live_trades_today.py) keeps working unchanged.
+Pass --sensex-out / --nifty-out to override with explicit paths (manual mode).
 
 Run during market hours 09:15 - 15:30 IST.
 Get today's token first:  python live_fetch.py
@@ -65,15 +72,33 @@ try:
 except ImportError:
     POINT_VALUE = 100   # Rs per spread point (display only)
 
+# ── Intraday EDGE filter (quality over quantity) ──────────────────────────────
+# The plain strategy enters on EVERY |z|>=ENTRY cross and books shallow reversions
+# (~4 pts) that barely clear the Rs80 charge -> heavy over-trading, thin/negative
+# net. EDGE mode only enters when the room-to-revert (|spread - mean|) is >=
+# EDGE_TARGET and books at +EDGE_TARGET, so each trade aims for a move several
+# times the charge. Backtest on this week's feed: 3,700 -> ~528 trades, net win
+# 61% -> ~100%, net +Rs46k -> +Rs183k/lot (target 16). Disable with --no-edge.
+EDGE_FILTER      = True   # default ON
+EDGE_TARGET      = 16     # pts: entry room filter + profit-book level (--target N)
+EDGE_MAXHOLD_MIN = 30     # intraday time-stop (minutes)
+
 BASE        = "https://api.upstox.com/v2"
 SENSEX_KEY  = "BSE_INDEX|SENSEX"
 NIFTY_KEY   = "NSE_INDEX|Nifty 50"
 EOD_HH, EOD_MM = 15, 30            # auto-stop the feed at market close (IST)
 
 # ── CSV storage ───────────────────────────────────────────────────────────────
-SENSEX_CSV  = "sensex_data.csv"    # full SENSEX quote, one row per tick
-NIFTY_CSV   = "nifty_data.csv"     # full NIFTY  quote, one row per tick
+SENSEX_CSV  = "sensex_data.csv"    # full SENSEX quote, one row per tick (primary path; set in main)
+NIFTY_CSV   = "nifty_data.csv"     # full NIFTY  quote, one row per tick (primary path; set in main)
 HISTORY_CSV = "history.csv"        # daily SENSEX+NIFTY closes for z-score warm-up
+
+# Every tick is written to ALL paths in these lists (set in main()): by default the
+# dated file PLUS the *_today.csv mirror; in --*-out manual mode, just the one path.
+SENSEX_TARGETS = [SENSEX_CSV]
+NIFTY_TARGETS  = [NIFTY_CSV]
+MIRROR_SENSEX  = "sensex_today.csv"   # flat copy the rest of the pipeline reads
+MIRROR_NIFTY   = "nifty_today.csv"
 
 # Every field the Upstox full-quote feed returns per instrument, flattened.
 # `raw_json` keeps the complete, untouched payload (including market depth) so
@@ -233,14 +258,29 @@ def resolve_index_futures():
 
 # ── Tick storage (CSV) ────────────────────────────────────────────────────────
 
-def ensure_quote_csvs():
+def default_dated_paths():
+    """Today's (sensex, nifty) CSV paths inside an auto-created dated folder:
+    <YYYY_MM_DD>/sensex_<YYYY-MM-DD>.csv and .../nifty_<YYYY-MM-DD>.csv (relative to
+    the current dir, i.e. feed_data/). Creates the folder if it does not exist."""
+    d = date.today()
+    folder = d.strftime("%Y_%m_%d")
+    os.makedirs(folder, exist_ok=True)
+    iso = d.isoformat()
+    return (os.path.join(folder, f"sensex_{iso}.csv"),
+            os.path.join(folder, f"nifty_{iso}.csv"))
+
+
+def ensure_quote_csvs(paths):
     """Ensure both per-symbol CSVs exist with the full header. If an existing
     file has a mismatched header (e.g. an old 2-column recovery file) or holds a
     previous day's data, archive it and start a fresh one - so each file always
     contains a single day's complete, consistently-columned data."""
     header = ",".join(QUOTE_COLUMNS)
     today  = date.today().isoformat()
-    for path in (SENSEX_CSV, NIFTY_CSV):
+    for path in paths:
+        folder = os.path.dirname(path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
         if os.path.exists(path):
             with open(path, encoding="utf-8") as fh:
                 first  = fh.readline().rstrip("\r\n")
@@ -256,7 +296,7 @@ def ensure_quote_csvs():
         if not os.path.exists(path):
             with open(path, "w", newline="", encoding="utf-8") as fh:
                 csv.writer(fh).writerow(QUOTE_COLUMNS)
-    print(f"[{SENSEX_CSV}] and [{NIFTY_CSV}] ready - quotes will be appended here.")
+    print(f"Quotes will be written to: {', '.join(paths)}")
 
 
 def save_quote(path, symbol, index_q, proxy_q, tick_time, spread, zscore, signal):
@@ -396,16 +436,16 @@ def sandbox_order(instrument, side, quantity, tag="snx_nf_pair"):
 class PaperTrader:
     """Live sandbox paper-trader for the SENSEX/NIFTY spread strategy.
 
-    Entry  : z <= -ENTRY  -> LONG  spread (BUY Sensex fut, SELL Nifty fut)
-             z >= +ENTRY  -> SHORT spread (SELL Sensex fut, BUY Nifty fut)
-    Exit   : mean reversion (LONG: z >= -EXIT ; SHORT: z <= EXIT),
-             stop loss (-STOP_LOSS pts), profit target (+PROFIT_TARGET pts),
-             or end-of-day square-off. Logic mirrors backtest.py.
-    P&L    : spread points  (LONG: spread-entry ; SHORT: entry-spread).
+    EDGE mode (default): enter z<=-ENTRY (LONG) / z>=+ENTRY (SHORT) ONLY when the
+    room-to-revert (|spread - mean|) >= target, so each trade aims for a move
+    several times the Rs80 charge. Exit at +target / -STOP_LOSS / time-stop / EOD.
+    --no-edge restores the old behavior (enter every cross, exit shallow reversion
+    at |z|<=EXIT / +PROFIT_TARGET). P&L in spread points (LONG: spread-entry).
     """
 
     def __init__(self, futs, num_lots, do_orders, save_csv,
-                 max_loss=None, max_trades=None):
+                 max_loss=None, max_trades=None,
+                 edge=True, target=EDGE_TARGET, maxhold_min=EDGE_MAXHOLD_MIN):
         self._futs    = futs            # {"SENSEX": {"key","lot"}, "NIFTY": {...}}
         self._lots    = num_lots
         self._orders  = do_orders
@@ -414,6 +454,10 @@ class PaperTrader:
         self._n       = 0
         self._wins    = 0
         self._pnl     = 0.0
+        # EDGE filter (quality over quantity)
+        self._edge        = edge
+        self._target      = target
+        self._maxhold_min = maxhold_min
         # Risk controls (minimise losses; they cannot eliminate them).
         self._max_loss   = max_loss      # halt new trades once session P&L <= -max_loss
         self._max_trades = max_trades    # cap trades per day
@@ -426,29 +470,41 @@ class PaperTrader:
         return self._futs.get(symbol, {}).get("key")
 
     # ── per-tick state machine ───────────────────────────────────────────────
-    def on_tick(self, sensex, nifty, spread, zscore, now):
+    def on_tick(self, sensex, nifty, spread, zscore, now, sma=None):
         if spread is None or zscore is None:
             return "WARMING UP", None
+        room = abs(spread - sma) if (sma is not None and not pd.isna(sma)) else None
 
         if self._trade:
             pnl = self._cur_pnl(spread)
             d   = self._trade["direction"]
             if pnl <= -STOP_LOSS:
                 return self._close("STOP_LOSS", sensex, nifty, spread, zscore, now), pnl
+            if self._edge:
+                # EDGE exits: book the target move, else time-stop, else hold.
+                if pnl >= self._target:
+                    return self._close("PROFIT_TARGET", sensex, nifty, spread, zscore, now), pnl
+                held_min = (now - self._trade["entry_time"]).total_seconds() / 60.0
+                if held_min >= self._maxhold_min:
+                    return self._close("MAX_HOLD", sensex, nifty, spread, zscore, now), pnl
+                return f"{d} OPEN", pnl
+            # legacy exits: profit target + shallow mean-reversion + day-based max-hold
             if pnl >= PROFIT_TARGET:
                 return self._close("PROFIT_TARGET", sensex, nifty, spread, zscore, now), pnl
             if d == "LONG"  and zscore >= -EXIT:
                 return self._close("REVERTED", sensex, nifty, spread, zscore, now), pnl
             if d == "SHORT" and zscore <=  EXIT:
                 return self._close("REVERTED", sensex, nifty, spread, zscore, now), pnl
-            age_days = (now - self._trade["entry_time"]).days
-            if age_days >= MAX_HOLD:
+            if (now - self._trade["entry_time"]).days >= MAX_HOLD:
                 return self._close("MAX_HOLD", sensex, nifty, spread, zscore, now), pnl
             return f"{d} OPEN", pnl
 
         # flat -> look for entry (blocked if a risk limit has halted trading)
         if self._halted:
             return "HALTED (risk limit)", None
+        # EDGE entry gate: skip shallow setups whose reversion won't clear the charge
+        if self._edge and room is not None and room < self._target:
+            return f"HOLD - room {room:.0f} < {self._target:.0f}", None
         if zscore <= -ENTRY:
             self._open("LONG", sensex, nifty, spread, zscore, now)
             return "LONG ENTERED ***", 0.0
@@ -577,9 +633,10 @@ def compute_live(df_history: pd.DataFrame, sensex: float, nifty: float) -> dict:
     z      = last["zscore"]
     spread = last["spread"]
     ratio  = last["ratio"]
+    sma    = last["spread_ma"]
 
     if pd.isna(z):
-        return {"spread": None, "zscore": None, "ratio": None, "signal": "WARMING UP"}
+        return {"spread": None, "zscore": None, "ratio": None, "sma": None, "signal": "WARMING UP"}
 
     if   z <= -ENTRY: signal = "BUY  SENSEX  +  SELL NIFTY"
     elif z >=  ENTRY: signal = "SELL SENSEX  +  BUY  NIFTY"
@@ -590,6 +647,7 @@ def compute_live(df_history: pd.DataFrame, sensex: float, nifty: float) -> dict:
         "spread": round(spread, 2),
         "zscore": round(z, 3),
         "ratio":  round(ratio, 4),
+        "sma":    round(sma, 2),
         "signal": signal,
     }
 
@@ -606,30 +664,41 @@ def compute_intraday(buf: list, sensex: float, nifty: float) -> dict:
         del buf[:len(buf) - 400]
 
     last = compute_signals(pd.DataFrame(buf)).iloc[-1]
-    z, spread, ratio = last["zscore"], last["spread"], last["ratio"]
+    z, spread, ratio, sma = last["zscore"], last["spread"], last["ratio"], last["spread_ma"]
     if pd.isna(z):
-        return {"spread": None, "zscore": None, "ratio": None, "signal": "WARMING UP"}
+        return {"spread": None, "zscore": None, "ratio": None, "sma": None, "signal": "WARMING UP"}
 
     if   z <= -ENTRY: signal = "BUY  SENSEX  +  SELL NIFTY"
     elif z >=  ENTRY: signal = "SELL SENSEX  +  BUY  NIFTY"
     elif abs(z) <= 0.3: signal = "EXIT / HOLD"
     else:             signal = "HOLD"
     return {"spread": round(spread, 2), "zscore": round(z, 3),
-            "ratio": round(ratio, 4), "signal": signal}
+            "ratio": round(ratio, 4), "sma": round(sma, 2), "signal": signal}
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main():
-    global SENSEX_CSV, NIFTY_CSV
+    global SENSEX_CSV, NIFTY_CSV, SENSEX_TARGETS, NIFTY_TARGETS
     source   = "csv"
     interval = 1
     save_csv = "--no-save" not in sys.argv
     intraday = "--intraday" in sys.argv   # z over the day's own ticks (per-second backtest style)
-    if "--sensex-out" in sys.argv:
-        SENSEX_CSV = sys.argv[sys.argv.index("--sensex-out") + 1]
-    if "--nifty-out" in sys.argv:
-        NIFTY_CSV = sys.argv[sys.argv.index("--nifty-out") + 1]
+    manual_out = ("--sensex-out" in sys.argv) or ("--nifty-out" in sys.argv)
+    if manual_out:
+        # manual mode: write exactly where told (no dated folder, no today-mirror)
+        if "--sensex-out" in sys.argv:
+            SENSEX_CSV = sys.argv[sys.argv.index("--sensex-out") + 1]
+        if "--nifty-out" in sys.argv:
+            NIFTY_CSV = sys.argv[sys.argv.index("--nifty-out") + 1]
+        SENSEX_TARGETS = [SENSEX_CSV]
+        NIFTY_TARGETS  = [NIFTY_CSV]
+    else:
+        # default: auto-created dated folder + dated filenames, mirrored to the
+        # *_today.csv files the rest of the pipeline reads
+        SENSEX_CSV, NIFTY_CSV = default_dated_paths()
+        SENSEX_TARGETS = [SENSEX_CSV, MIRROR_SENSEX]
+        NIFTY_TARGETS  = [NIFTY_CSV, MIRROR_NIFTY]
 
     if "--source" in sys.argv:          # accepted for backward-compat, ignored
         idx    = sys.argv.index("--source")
@@ -644,6 +713,8 @@ def main():
         num_lots = int(sys.argv[sys.argv.index("--lots") + 1])
     max_loss   = float(sys.argv[sys.argv.index("--max-loss") + 1])   if "--max-loss"   in sys.argv else None
     max_trades = int(sys.argv[sys.argv.index("--max-trades") + 1])   if "--max-trades" in sys.argv else None
+    edge_filter = "--no-edge" not in sys.argv                          # quality-over-quantity entry filter
+    edge_target = float(sys.argv[sys.argv.index("--target") + 1]) if "--target" in sys.argv else EDGE_TARGET
 
     print("Loading history from history.csv ...")
     df_history = load_history(source)
@@ -665,13 +736,14 @@ def main():
     poll_keys  = [SENSEX_KEY, NIFTY_KEY] + [k for k in (sensex_fut, nifty_fut) if k]
 
     if save_csv:
-        ensure_quote_csvs()
+        ensure_quote_csvs(SENSEX_TARGETS + NIFTY_TARGETS)
 
     trader = None
     if trade_enabled:
         if sensex_fut and nifty_fut:
             trader = PaperTrader(futs, num_lots, do_orders=True, save_csv=save_csv,
-                                 max_loss=max_loss, max_trades=max_trades)
+                                 max_loss=max_loss, max_trades=max_trades,
+                                 edge=edge_filter, target=edge_target, maxhold_min=EDGE_MAXHOLD_MIN)
             if save_csv:
                 ensure_paper_csv()
             mode = "REAL sandbox orders" if _SANDBOX_CFG else "SIMULATED (no sandbox token)"
@@ -681,12 +753,21 @@ def main():
             risk_str = " | risk: " + ", ".join(risk) if risk else " | risk: none (use --max-loss/--max-trades)"
             print(f"Paper trading: ON  | legs {futs['SENSEX']['tsym']} & {futs['NIFTY']['tsym']} "
                   f"| {num_lots} lot(s)/leg | {mode}{risk_str}")
+            if edge_filter:
+                print(f"  EDGE filter: ON  | enter only when room-to-revert >= {edge_target:.0f} pts; "
+                      f"book +{edge_target:.0f} / stop -{STOP_LOSS} / {EDGE_MAXHOLD_MIN}min / EOD  "
+                      f"(quality over quantity)")
+            else:
+                print("  EDGE filter: OFF (--no-edge) -> enters every z-cross, exits shallow reversion")
         else:
             print("Paper trading: requested but futures unavailable - DISABLED")
 
     print(f"\nPolling {interval}s | Entry +/-{ENTRY} Exit +/-{EXIT} "
           f"SL -{STOP_LOSS} TP +{PROFIT_TARGET} pts | EOD {EOD_HH:02d}:{EOD_MM:02d} IST")
-    print(f"Saving quotes: {'YES -> ' + SENSEX_CSV + ' , ' + NIFTY_CSV if save_csv else 'NO (--no-save)'}")
+    if save_csv:
+        print(f"Saving quotes -> {', '.join(SENSEX_TARGETS + NIFTY_TARGETS)}")
+    else:
+        print("Saving quotes: NO (--no-save)")
     print(f"Press Ctrl+C to stop.\n")
     print(f"{'TIME':<10} {'SENSEX':>12} {'NIFTY':>11} {'RATIO':>8} "
           f"{'SPREAD':>9} {'Z':>7}  {'SIGNAL':<28} {'TRADE':<18} {'P&L':>10}")
@@ -733,7 +814,7 @@ def main():
                 tstatus, tpnl = "", None
                 if trader:
                     tstatus, tpnl = trader.on_tick(
-                        sensex, nifty, result["spread"], result["zscore"], now)
+                        sensex, nifty, result["spread"], result["zscore"], now, result.get("sma"))
                 pnl_str = f"{tpnl:+.2f}pts" if tpnl is not None else "---"
 
                 print(
@@ -748,10 +829,12 @@ def main():
                 )
 
                 if save_csv:
-                    save_quote(SENSEX_CSV, "SENSEX", sx_idx, sx_fut, now,
-                               result["spread"], result["zscore"], result["signal"])
-                    save_quote(NIFTY_CSV, "NIFTY", nf_idx, nf_fut, now,
-                               result["spread"], result["zscore"], result["signal"])
+                    for p in SENSEX_TARGETS:
+                        save_quote(p, "SENSEX", sx_idx, sx_fut, now,
+                                   result["spread"], result["zscore"], result["signal"])
+                    for p in NIFTY_TARGETS:
+                        save_quote(p, "NIFTY", nf_idx, nf_fut, now,
+                                   result["spread"], result["zscore"], result["signal"])
 
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 401:
